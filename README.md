@@ -19,7 +19,19 @@ _✨ 手动重启 · 定时重启 · 内存监控 · 每日重置上下文 ✨_
 
 ## 📦 安装
 
+### 方式一：插件市场安装
+
 - 在 AstrBot 插件市场搜索 `重启性能增强`，点击安装，耐心等待安装完成即可。
+
+### 方式二：命令行安装
+
+在 AstrBot 对话框中发送以下指令，从 GitHub 仓库安装：
+
+```
+/plugin install https://github.com/XIXIXISKY/astrbot_plugin_Restart_Performance_Boost
+```
+
+也可在 AstrBot 后台 → 插件管理 → 从仓库安装，输入仓库链接即可完成安装。
 
 ## ⌨️ 使用说明
 
