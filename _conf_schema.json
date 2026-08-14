@@ -1,0 +1,87 @@
+{
+    "auto_restart_interval_seconds": {
+        "description": "自动重启间隔（秒）",
+        "type": "int",
+        "hint": "填入秒数后按该间隔无限循环重启，如 10800 代表每3小时重启一次；填入 0 表示关闭自动重启。可用命令 “定时重启 <秒数>” 设置",
+        "default": 0
+    },
+    "show_memory_info": {
+        "description": "重启完后显示内存使用情况",
+        "type": "bool",
+        "default": true
+    },
+    "memory_monitor_enabled": {
+        "description": "启用内存阈值监控自动重启",
+        "type": "bool",
+        "default": true
+    },
+    "memory_threshold_value": {
+        "description": "内存阈值数值（支持小数）",
+        "type": "float",
+        "default": 80
+    },
+    "memory_threshold_unit": {
+        "description": "内存阈值单位，percent 或 mb",
+        "type": "string",
+        "default": "percent"
+    },
+    "memory_check_interval": {
+        "description": "内存检查频率（秒）",
+        "type": "int",
+        "default": 30
+    },
+    "memory_cooldown_seconds": {
+        "description": "内存触发重启后的冷却时间（秒）",
+        "type": "int",
+        "default": 600
+    },
+    "ctx_reset_time": {
+        "description": "每日定时重置上下文（24小时制 HH:MM，留空关闭）",
+        "type": "string",
+        "hint": "填入时间如 23:00，每天到该时间自动触发reset清空上下文。留空表示关闭。可用命令 \"定时重置 <HH:MM|关>\" 设置",
+        "default": ""
+    },
+    "restart_cache": {
+        "description": "重启缓存区",
+        "type": "object",
+        "invisible": true,
+        "items": {
+            "platform_id": {
+                "description": "重启命令所在的平台",
+                "type": "string"
+            },
+            "umo": {
+                "description": "重启命令所在的会话",
+                "type": "string"
+            },
+            "start_ts": {
+                "description": "重启命令发送时间",
+                "type": "float"
+            },
+            "ctx_reset_umo": {
+                "description": "定时重置上下文的目标会话",
+                "type": "string"
+            },
+            "ctx_reset_private_umo": {
+                "description": "定时重置上下文的私聊会话",
+                "type": "string"
+            },
+            "restart_reason": {
+                "description": "最近一次重启的原因",
+                "type": "string"
+            },
+            "ctx_reset_platform_id": {
+                "description": "定时重置上下文的目标平台",
+                "type": "string"
+            },
+            "trigger_mem": {
+                "description": "触发重启时的内存占用",
+                "type": "string"
+            },
+            "_last_ctx_reset_date": {
+                "description": "上次重置上下文的日期，用于重载后跳过当天已执行的重置",
+                "type": "string"
+            }
+        }
+    }
+}
