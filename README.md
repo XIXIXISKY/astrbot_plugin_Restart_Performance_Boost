@@ -8,6 +8,8 @@ _✨ 手动重启 · 定时重启 · 内存监控 · 每日重置上下文 ✨_
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.27.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
+[![Author](https://img.shields.io/badge/Author-汐汐-ff69b4.svg)](https://github.com/XIXIXISKY)
+[![QQ](https://img.shields.io/badge/QQ-1985895920-4c9aff.svg)](https://wpa.qq.com/msgrd?v=3&uin=1985895920&site=qq&menu=yes)
 
 </div>
 
@@ -19,19 +21,18 @@ _✨ 手动重启 · 定时重启 · 内存监控 · 每日重置上下文 ✨_
 
 ## 📦 安装
 
-### 方式一：插件市场安装
-
+### 方法一：插件市场
 - 在 AstrBot 插件市场搜索 `重启性能增强`，点击安装，耐心等待安装完成即可。
 
-### 方式二：命令行安装
-
-在 AstrBot 对话框中发送以下指令，从 GitHub 仓库安装：
+### 方法二：命令行安装
+- 在 AstrBot 聊天界面发送以下指令，回车即可自动安装：
 
 ```
 /plugin install https://github.com/XIXIXISKY/astrbot_plugin_Restart_Performance_Boost
 ```
 
-也可在 AstrBot 后台 → 插件管理 → 从仓库安装，输入仓库链接即可完成安装。
+### 方法三：后台面板安装
+- 打开 AstrBot 管理面板 → 插件管理 → 从仓库安装，输入上面的 GitHub 仓库地址，点击安装即可。
 
 ## ⌨️ 使用说明
 
