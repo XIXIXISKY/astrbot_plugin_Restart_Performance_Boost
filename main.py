@@ -70,11 +70,15 @@ class RestartPlugin(Star):
         """
         import asyncio
         import time
-        from .utils import get_memory_info, get_memory_usage_percent
+        from .utils import get_memory_info, get_memory_usage_percent, persist_restart_cache
 
         # 耗时 = 现在 - 重启发起时刻
         start_ts = float(self.cache.get("start_ts") or 0)
-        elapsed = (time.time() - start_ts) if start_ts > 0 else 0.0
+        # 防止钩子重复触发时发送重复消息
+        if start_ts <= 0:
+            logger.info("[重启插件] on_astrbot_loaded 无有效重启信息，跳过")
+            return
+        elapsed = time.time() - start_ts
         start_time_str = (
             time.strftime("%H:%M:%S", time.localtime(start_ts)) if start_ts > 0 else "--:--:--"
         )
@@ -121,7 +125,7 @@ class RestartPlugin(Star):
         self.cache["start_ts"] = time.time()
         self.cache["restart_reason"] = "手动重启"
         self.cache["trigger_mem"] = "{:.1f}%".format(get_memory_usage_percent())
-        self.config.save_config()
+        persist_restart_cache(self.config)
         await self.dashboard.restart()
 
     @filter.permission_type(filter.PermissionType.ADMIN)
