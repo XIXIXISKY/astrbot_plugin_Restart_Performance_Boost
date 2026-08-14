@@ -4,4 +4,5 @@ desc: 一个手动和自动重启AstrBot的插件，支持指令手动重启、�
 help: 略
 version: v1.0.0
 author: 汐汐（QQ：1985895920）
+repo: https://github.com/XIXIXISKY/astrbot_plugin_Restart_Performance_Boost
 astrbot_version: ">=4.27.2"
