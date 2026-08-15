@@ -86,7 +86,10 @@ class RestartPlugin(Star):
         msg += "触发时内存：{}\n".format(trigger_mem)
         msg += "当前内存：{}".format(get_memory_info())
 
-        target = self.cache.get("umo") or "default:FriendMessage:1985895920"
+        target = self.cache.get("umo") or self.config.get("notify_umo", "")
+        if not target:
+            logger.info("[重启插件] 未配置通知目标，跳过重启反馈通知")
+            return
         max_attempts = 30
         for attempt in range(1, max_attempts + 1):
             try:

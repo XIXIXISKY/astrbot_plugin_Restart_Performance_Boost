@@ -162,8 +162,11 @@ class RestartScheduler:
             notify_umo = self.cache["umo"]
             notify_platform = self.cache["platform_id"]
         else:
-            notify_umo = "default:FriendMessage:1985895920"
-            notify_platform = "default"
+            notify_umo = self.config.get("notify_umo", "")
+            notify_platform = self.config.get("notify_platform", "")
+            if not notify_umo:
+                notify_umo = ""
+                notify_platform = ""
         self.cache["start_ts"] = time.time()
         self.cache["restart_reason"] = reason
         self.cache["umo"] = notify_umo
@@ -471,12 +474,13 @@ class RestartScheduler:
         from .utils import format_clear_summary
         summary = format_clear_summary(clear_count, total, group_umos, private_umos, now_str)
         logger.info(f"[重启插件] 已一键清空 {clear_count}/{total} 个会话上下文（清除时间：{now_str}）")
-        # 反馈发给汐汐本人私聊
-        notify_umo = "default:FriendMessage:1985895920"
+        # 反馈发给用户配置的通知目标；未配置则跳过
+        notify_umo = self.config.get("notify_umo", "")
         try:
-            await self.context.send_message(
-                session=notify_umo,
-                message_chain=MessageChain([Plain(summary)]),
-            )
+            if notify_umo:
+                await self.context.send_message(
+                    session=notify_umo,
+                    message_chain=MessageChain([Plain(summary)]),
+                )
         except Exception as e:
             logger.warning(f"[重启插件] 发送反馈通知失败 {notify_umo}: {e}")
