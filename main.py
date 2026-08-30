@@ -1,35 +1,159 @@
 # restart_plugin.py
 import asyncio
 import json
-import os
 import re
 import time
 from datetime import datetime
 from typing import Any
 
 from astrbot.api import logger
-from astrbot.api.event import filter
+from astrbot.api.event import filter, MessageEventResult
 from astrbot.api.event.filter import on_astrbot_loaded
 from astrbot.api.star import Context, Star
 from astrbot.core.config.astrbot_config import AstrBotConfig
-from astrbot.core.message.components import File, Plain
+from astrbot.core.message.components import Plain
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.star.star_manager import PluginManager
 
+from .balance_client import (
+    BalanceManager,
+    BalanceResult,
+    NewApiAccountFetcher,
+    NewApiSubscriptionFetcher,
+    YamlBalanceQueryer,
+)
 from .dashboard_client import DashboardClient
 from .restart_scheduler import RestartScheduler
 from .utils import fmt_seconds, get_memory_info, persist_restart_cache
+from astrbot.core.db.po import ProviderStat
+from sqlalchemy import select, func, column as col
 
 
 
 class RestartPlugin(Star):
+    # 指令文档数据源：`帮助` 只列指令名，`指令介绍` 输出完整说明。
+    # 每条 = {"name": 指令名, "detail": [完整用法行...]}
+    COMMAND_DOCS = [
+        {"name": "重启", "detail": [
+            "用法：重启",
+            "说明：立即重启 AstrBot 核心（需管理员）",
+        ]},
+        {"name": "定时重启", "detail": [
+            "用法：定时重启 开 / 关 / <秒数>",
+            "示例：定时重启 7200  （每2小时重启一次）",
+            "示例：定时重启 关",
+        ]},
+        {"name": "定时重置", "detail": [
+            "用法：定时重置 <HH:MM> / 关",
+            "示例：定时重置 04:00  （每日凌晨4点重置上下文）",
+            "示例：定时重置 关",
+        ]},
+        {"name": "清空所有会话上下文", "detail": [
+            "用法：清空所有会话上下文",
+            "说明：一键清空所有已登记会话的上下文",
+        ]},
+        {"name": "查看列表", "detail": [
+            "用法：查看列表",
+            "说明：查看当前已登记的所有群聊和私聊会话",
+        ]},
+        {"name": "增加会话", "detail": [
+            "用法：增加会话 群聊 <群号>",
+            "用法：增加会话 私聊 <QQ号>",
+            "示例：增加会话 群聊 123456789",
+            "说明：为定时重置名单添加会话",
+        ]},
+        {"name": "删除会话", "detail": [
+            "用法：删除会话 群聊 <群号>",
+            "用法：删除会话 私聊 <QQ号>",
+            "示例：删除会话 私聊 987654321",
+            "说明：从定时重置名单移除会话",
+        ]},
+        {"name": "内存阈值", "detail": [
+            "用法：内存阈值 <数值[单位]> / 开 / 关 / 状态",
+            "示例：内存阈值 85        （按默认单位，默认%）",
+            "示例：内存阈值 2048 mb   （带单位，自动切换为MB）",
+            "示例：内存阈值 状态      （查看当前设置）",
+            "说明：只输数字按默认单位，带单位后缀优先",
+        ]},
+        {"name": "内存单位", "detail": [
+            "用法：内存单位 <percent|mb> / 状态",
+            "示例：内存单位 mb     （默认单位切为MB）",
+            "示例：内存单位 状态  （查看当前默认单位）",
+            "说明：只输数字时按该默认单位解释",
+        ]},
+        {"name": "内存监控", "detail": [
+            "用法：内存监控 <数值[单位]> / 开 / 关 / 状态",
+            "示例：内存监控 80          （设阈值并自动开启监控）",
+            "示例：内存监控 2048 mb     （MB单位同款用法）",
+            "说明：设阈值+开监控一条指令搞定",
+        ]},
+        {"name": "内存检查间隔", "detail": [
+            "用法：内存检查间隔 <秒数> / 默认",
+            "示例：内存检查间隔 60  （每60秒检查一次）",
+            "示例：内存检查间隔 默认  （恢复30秒）",
+        ]},
+        {"name": "内存冷却", "detail": [
+            "用法：内存冷却 <秒数> / 默认",
+            "示例：内存冷却 300  （触发重启后冷却5分钟）",
+            "示例：内存冷却 默认  （恢复600秒）",
+        ]},
+        {"name": "重置自动重启", "detail": [
+            "用法：重置自动重启",
+            "说明：重置自动重启倒计时并重载内存监控配置",
+        ]},
+        {"name": "重载", "detail": [
+            "用法：重载 <插件名/序号>",
+            "示例：重载 1       （重载序号1的插件）",
+            "示例：重载 all     （重载所有插件）",
+            "说明：空参时列出所有插件及序号",
+        ]},
+        {"name": "插件状态", "detail": [
+            "用法：插件状态",
+            "说明：查看重启插件当前配置状态",
+        ]},
+        {"name": "性能", "detail": [
+            "用法：性能",
+            "说明：查看系统 CPU 和内存占用",
+        ]},
+        {"name": "余额", "detail": [
+            "用法：余额 当前 / 所有 / <平台名> / 账户 / 订阅",
+            "用法：余额 key sk-xxx1 sk-xxx2...   （用当前平台地址批量查多个 Key）",
+            "用法：余额 https://站点 sk-xxx...   （自定义端点直接查）",
+            "用法：余额 json {\"api_url\":\"...\",\"api_key\":\"...\"}   （粘贴 NewAPI 连接信息）",
+            "用法：余额 yaml   （按 YAML 配置查询自定义服务，需开启 balance_yaml_enabled）",
+            "示例：余额 当前 / 余额 所有 / 余额 deepseek / 余额 账户 / 余额 订阅",
+            "说明：查询大模型平台余额；账户/订阅需配置 NEW API 令牌，订阅为实验性功能（仅供站点管理员试用，普通用户请勿使用，效果未知）。",
+            "高级：支持模板化输出、批量 Key、自定义端点、粘贴 JSON、YAML 服务、LLM 工具（详见插件配置）",
+        ]},
+        {"name": "用量", "detail": [
+            "用法：用量 当前 / 所有 / <平台名>",
+            "示例：用量 当前",
+            "示例：用量 所有",
+            "示例：用量 deepseek",
+            "说明：查询大模型 Token 用量（缓存命中/输入/输出），需管理员",
+        ]},
+    ]
+
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.context = context
         self.star_manager: PluginManager = self.context._star_manager
         self.config = config
+        newapi_urls = [
+            u.strip()
+            for u in (config.get("newapi_base_url", "") or "").replace(",", "\n").split("\n")
+            if u.strip()
+        ]
+        self.balance_manager = BalanceManager(newapi_urls)
+        # —— 从外部插件学习的新能力配置 ——
+        self.balance_yaml_enabled = bool(config.get("balance_yaml_enabled", False))
+        self.balance_yaml_config = config.get("balance_yaml_config", "") or ""
+        self.balance_show_unsupported = bool(config.get("balance_show_unsupported", True))
+        self.balance_admin_only = bool(config.get("balance_admin_only", True))
+        self.yaml_queryer = YamlBalanceQueryer()
+        self._apply_extra_aliases(config.get("balance_alias_config", "") or "")
         raw_cache = config.get("restart_cache")
         if isinstance(raw_cache, dict):
             self.cache: dict[str, Any] = raw_cache
@@ -57,6 +181,8 @@ class RestartPlugin(Star):
     async def terminate(self):
         await self.dashboard.terminate()
         await self.scheduler.shutdown()
+        await self.balance_manager.close()
+        await self.yaml_queryer.close()
         logger.info("重启插件已终止")
 
     # ================== 重启完成通知 ==================
@@ -817,90 +943,583 @@ class RestartPlugin(Star):
 
     @filter.command("帮助", alias={"help", "指令列表", "命令列表"})
     async def help_command(self, event: AstrMessageEvent):
-        """查看"重启插件"的全部指令及用法。"""
+        """查看"重启插件"的全部指令（仅指令列表）。"""
+        lines = ["重启插件增强版 指令列表", ""]
+        for i, doc in enumerate(self.COMMAND_DOCS, 1):
+            lines.append(f"{i}、{doc['name']}")
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("指令介绍", alias={"完整帮助", "详细帮助", "使用说明"})
+    async def command_intro(self, event: AstrMessageEvent):
+        """查看"重启插件"全部指令及完整使用说明。"""
+        lines = ["重启插件增强版 指令列表+用法说明", ""]
+        for i, doc in enumerate(self.COMMAND_DOCS, 1):
+            lines.append(f"{i}、{doc['name']}")
+            for detail in doc["detail"]:
+                lines.append(f"    {detail}")
+            lines.append("")
+        yield event.plain_result("\n".join(lines))
+
+
+    # ================== 余额查询 ==================
+
+    def _is_balance_admin(self, event: AstrMessageEvent) -> bool:
+        """管理员权限检查（balance_admin_only 可配置关闭）。"""
+        if not self.balance_admin_only:
+            return True
+        try:
+            admins = self.context.get_config().admins_id
+            return event.get_sender_id() in admins
+        except Exception:
+            return False
+
+    def _apply_extra_aliases(self, config_str: str) -> None:
+        """把 balance_alias_config（YAML/JSON 文本）里的别名合并到各 fetcher。"""
+        if not (config_str or "").strip():
+            return
+        config_str = str(config_str).replace("\\n", "\n")
+        mapping = {}
+        try:
+            if config_str.lstrip().startswith("{"):
+                mapping = json.loads(config_str)
+            else:
+                try:
+                    import yaml as _yaml
+                    mapping = _yaml.safe_load(config_str) or {}
+                except Exception:
+                    return
+        except Exception:
+            return
+        if not isinstance(mapping, dict):
+            return
+        for plat, extra in mapping.items():
+            if isinstance(extra, str):
+                extra = [extra]
+            if not isinstance(extra, list):
+                continue
+            plat_l = str(plat).lower()
+            for fetcher in self.balance_manager.fetchers:
+                al = [a.lower() for a in fetcher.aliases]
+                if plat_l in al or any(plat_l in a or a in plat_l for a in al):
+                    for e in extra:
+                        e = str(e).strip()
+                        if e and e.lower() not in al:
+                            fetcher.aliases.append(e)
+
+    @filter.command("余额", alias={"查询余额"})
+    async def balance_query(self, event: AstrMessageEvent):
+        """查询大模型平台余额：余额 [当前|所有|平台名|账户|订阅|key ...|URL ...|json ...|yaml]。"""
+        if not self._is_balance_admin(event):
+            yield event.plain_result("🚫 只有管理员可以使用此指令。")
+            return
+        sub = self._parse_balance_sub(event.message_str or "")
+        if sub in ("", "帮助", "help"):
+            yield event.plain_result(self._balance_help())
+            return
+        if sub == "当前":
+            async for msg in self._balance_current(event):
+                yield msg
+            return
+        if sub == "所有":
+            async for msg in self._balance_all(event):
+                yield msg
+            return
+        if sub in ("账户", "账号", "账户余额"):
+            async for msg in self._balance_newapi_account(event):
+                yield msg
+            return
+        if sub in ("订阅", "订阅余额"):
+            async for msg in self._balance_newapi_subscription(event):
+                yield msg
+            return
+        if sub == "yaml":
+            async for msg in self._balance_yaml(event):
+                yield msg
+            return
+        if sub.startswith("json"):
+            async for msg in self._balance_json(event, sub):
+                yield msg
+            return
+        parsed = self._parse_custom_balance(sub)
+        if parsed is not None:
+            async for msg in self._balance_custom(event, *parsed):
+                yield msg
+            return
+        async for msg in self._balance_platform(event, sub):
+            yield msg
+
+    def _parse_balance_sub(self, raw: str) -> str:
+        """解析 /余额 或 余额 后的子命令。"""
+        t = (raw or "").strip()
+        if t.startswith("/"):
+            t = t[1:]
+        for kw in ("查询余额", "余额"):
+            if t.startswith(kw):
+                t = t[len(kw):].strip()
+                break
+        return t
+
+    def _balance_help(self) -> str:
+        return (
+            "💰 余额查询\n"
+            "━━━━━━━━━━━━\n"
+            " 余额 当前 - 查当前会话使用的模型余额\n"
+            " 余额 所有 - 查所有已配置模型余额\n"
+            " 余额 <平台名> - 查指定平台（deepseek/硅基/kimi/newapi…）\n"
+            " 余额 账户 - 查 NEW API 账户余额（需配置令牌）\n"
+            " 余额 订阅 - 实验性高级模式：查订阅额度（需管理员权限）\n"
+            " 余额 key sk-xxx1 sk-xxx2 - 当前平台批量查多个 Key\n"
+            " 余额 https://站点 sk-xxx - 自定义端点直接查\n"
+            " 余额 json {…} - 粘贴 NewAPI 连接信息查询\n"
+            " 余额 yaml - 按 YAML 配置查自定义服务（需启用）"
+        )
+
+    def _tpl(self, key: str, default: str) -> str:
+        v = self.config.get(key, "") or ""
+        return v.replace("\\n", "\n") if v else default
+
+    def _render_balance_block(self, results, title, keys=None):
+        """用模板渲染一组余额结果（header + 分隔符 + 各条）。"""
+        header = self._tpl("balance_header_template", "💰 **{{title}}**").replace("{{title}}", title)
+        sep = self._tpl("balance_separator_template", "\n━━━━━━━━━━━━━━\n")
+        output_tpl = self._tpl("balance_output_template", "")
+        error_tpl = self._tpl("balance_error_template", "")
+        blocks = []
+        for i, r in enumerate(results):
+            key = keys[i] if keys and i < len(keys) else ""
+            blocks.append(r.render_tpl(output_tpl, error_tpl, key))
+        return header + sep + sep.join(blocks)
+
+    @staticmethod
+    def _mask_key(key: str) -> str:
+        if not key:
+            return ""
+        if len(key) <= 9:
+            return "****"
+        return key[:6] + "*" * (len(key) - 9) + key[-3:]
+
+    @staticmethod
+    def _provider_keys(provider) -> list:
+        cfg = getattr(provider, "provider_config", {}) or {}
+        keys = cfg.get("key", []) or []
+        seen, out = set(), []
+        for k in keys:
+            if k and k not in seen:
+                seen.add(k)
+                out.append(k)
+        return out
+
+    def _parse_custom_balance(self, sub: str):
+        """尝试解析「余额 <URL|平台名|key> sk-xxx1 sk-xxx2...」。
+        返回 (mode, arg, keys)；无法识别返回 None。
+        mode: current(当前平台地址) / url(自定义端点) / platform(按平台名匹配地址)。
+        """
+        parts = (sub or "").split()
+        if not parts:
+            return None
+        if parts[0].lower() in ("key", "keys"):
+            return ("current", "", parts[1:]) if len(parts) > 1 else None
+        if parts[0].startswith("http://") or parts[0].startswith("https://"):
+            return ("url", parts[0], parts[1:]) if len(parts) > 1 else None
+        if len(parts) >= 2:
+            for fetcher in self.balance_manager.fetchers:
+                if fetcher.match_by_name(parts[0]):
+                    return ("platform", parts[0], parts[1:])
+        return None
+
+    async def _balance_custom(self, event, mode, arg, keys):
+        """批量 Key / 自定义端点查询。"""
+        if mode == "current":
+            try:
+                provider = self.context.get_using_provider(umo=event.unified_msg_origin)
+            except Exception as e:
+                yield event.plain_result(f"获取当前模型失败：{e}")
+                return
+            if not provider:
+                yield event.plain_result("当前没有使用中的模型提供商。")
+                return
+            api_base = (getattr(provider, "provider_config", {}) or {}).get("api_base", "") or ""
+            if not api_base:
+                yield event.plain_result("当前提供商未配置 api_base。")
+                return
+            title = "自定义 Key 查询（当前平台）"
+        elif mode == "url":
+            api_base = arg
+            title = f"自定义端点 {arg}"
+        else:
+            api_base = None
+            for p in self.context.get_all_providers():
+                cfg = getattr(p, "provider_config", {}) or {}
+                base = cfg.get("api_base", "") or ""
+                if arg.lower() in base.lower():
+                    api_base = base
+                    break
+            if not api_base:
+                yield event.plain_result(f"未找到匹配「{arg}」的提供商（按 api_base 匹配）。")
+                return
+            title = f"平台「{arg}」批量 Key"
+        yield event.plain_result(f"🔄 正在查询 {len(keys)} 个密钥，请稍候…")
+        results = await asyncio.gather(
+            *[self.balance_manager.query(k, api_base) for k in keys]
+        )
+        yield event.plain_result(self._render_balance_block(results, title, keys))
+
+    async def _balance_json(self, event, sub):
+        """粘贴 NewAPI 连接信息 JSON 查询。"""
+        raw = sub[len("json"):].strip()
+        if not raw:
+            yield event.plain_result('用法：余额 json {"api_url":"…","api_key":"…"}')
+            return
+        try:
+            data = json.loads(raw)
+        except Exception as e:
+            yield event.plain_result(f"JSON 解析失败：{e}")
+            return
+        if not isinstance(data, dict):
+            yield event.plain_result("JSON 应为对象。")
+            return
+        api_url = str(data.get("api_url") or data.get("url") or data.get("base_url") or "").strip()
+        keys = []
+        for kf in ("api_key", "api_keys", "key", "keys", "sk"):
+            v = data.get(kf)
+            if isinstance(v, list):
+                keys.extend(str(x) for x in v if str(x).strip())
+            elif v:
+                keys.append(str(v).strip())
+        if not keys:
+            yield event.plain_result("JSON 里没找到 api_key / api_keys 字段。")
+            return
+        if not api_url:
+            yield event.plain_result("JSON 里没找到 api_url / url / base_url 字段。")
+            return
+        yield event.plain_result(f"🔄 正在查询 {len(keys)} 个密钥（{api_url}），请稍候…")
+        results = await asyncio.gather(
+            *[self.balance_manager.query(k, api_url) for k in keys]
+        )
+        yield event.plain_result(self._render_balance_block(results, f"JSON 查询 {api_url}", keys))
+
+    async def _balance_yaml(self, event):
+        """按 YAML 配置查询自定义服务余额。"""
+        if not self.balance_yaml_enabled:
+            yield event.plain_result("YAML 模式未启用：请在插件配置打开 balance_yaml_enabled 并填写 balance_yaml_config。")
+            return
+        if not (self.balance_yaml_config or "").strip():
+            yield event.plain_result("未配置 balance_yaml_config（YAML services 列表）。")
+            return
+        yield event.plain_result("🔄 正在查询 YAML 配置的服务，请稍候…")
+        results = await self.yaml_queryer.query(self.balance_yaml_config)
+        lines = ["📦 YAML 服务余额", "━━━━━━━━━━━━━━"] + results
+        yield event.plain_result("\n".join(lines))
+
+    async def _balance_current(self, event: AstrMessageEvent):
+        try:
+            provider = self.context.get_using_provider(umo=event.unified_msg_origin)
+        except Exception as e:
+            yield event.plain_result(f"获取当前模型失败：{e}")
+            return
+        if not provider:
+            yield event.plain_result("当前没有使用中的模型提供商。")
+            return
+        cfg = getattr(provider, "provider_config", {}) or {}
+        api_base = cfg.get("api_base", "") or ""
+        keys = self._provider_keys(provider)
+        if not keys:
+            yield event.plain_result("当前提供商未配置 API Key。")
+            return
+        yield event.plain_result("🔄 正在查询当前模型余额，请稍候…")
+        results = await asyncio.gather(
+            *[self.balance_manager.query(k, api_base) for k in keys]
+        )
+        yield event.plain_result(self._render_balance_block(results, "当前余额查询", keys))
+
+    async def _balance_all(self, event: AstrMessageEvent):
+        providers = self.context.get_all_providers()
+        if not providers:
+            yield event.plain_result("当前未配置任何模型提供商。")
+            return
+        creds = []
+        seen_creds = set()
+        for p in providers:
+            cfg = getattr(p, "provider_config", {}) or {}
+            base = cfg.get("api_base", "") or ""
+            for k in self._provider_keys(p):
+                if (base, k) not in seen_creds:
+                    seen_creds.add((base, k))
+                    creds.append((base, k, p))
+        if not creds:
+            yield event.plain_result("未找到有效的 API Key 配置。")
+            return
+        yield event.plain_result(f"🔄 正在查询 {len(creds)} 个平台余额，请稍候…")
+        tasks = [self.balance_manager.query(k, b) for (b, k, _p) in creds]
+        results = await asyncio.gather(*tasks)
+
+        success, errors = [], []
+        unsupported_ids = []
+        for (b, k, p), r in zip(creds, results):
+            if r.error:
+                if "暂不支持" in (r.error or ""):
+                    pid = (getattr(p, "provider_config", {}) or {}).get("id", "Unknown")
+                    if "/" in str(pid):
+                        pid = str(pid).split("/")[0]
+                    unsupported_ids.append(pid)
+                else:
+                    errors.append((k, r))
+            else:
+                success.append((k, r))
+        unsupported_ids = sorted(set(unsupported_ids))
+
+        parts = []
+        if success:
+            parts.append(self._render_balance_block([r for _k, r in success], "全平台余额汇总", [k for k, _r in success]))
+        if errors:
+            parts.append(self._render_balance_block([r for _k, r in errors], "查询异常", [k for k, _r in errors]))
+        if unsupported_ids and self.balance_show_unsupported:
+            parts.append("⚪ 未适配平台：\n   " + ", ".join(unsupported_ids))
+        if not parts:
+            yield event.plain_result("⚠️ 未检测到有效的平台配置。")
+            return
+        yield event.plain_result("\n".join(parts))
+
+    async def _balance_platform(self, event: AstrMessageEvent, name: str):
+        providers = self.context.get_all_providers()
+        matched = []
+        for p in providers:
+            cfg = getattr(p, "provider_config", {}) or {}
+            base = cfg.get("api_base", "") or ""
+            if name.lower() in base.lower():
+                matched.append(p)
+        if not matched:
+            yield event.plain_result(f"未找到匹配「{name}」的提供商（按 api_base 匹配）。")
+            return
+        creds = []
+        seen_creds = set()
+        for p in matched:
+            cfg = getattr(p, "provider_config", {}) or {}
+            base = cfg.get("api_base", "") or ""
+            for k in self._provider_keys(p):
+                if (base, k) not in seen_creds:
+                    seen_creds.add((base, k))
+                    creds.append((base, k))
+        yield event.plain_result(f"🔄 正在查询 {len(creds)} 个密钥，请稍候…")
+        tasks = [self.balance_manager.query(k, b) for (b, k) in creds]
+        results = await asyncio.gather(*tasks)
+        yield event.plain_result(self._render_balance_block(results, f"平台「{name}」余额", [k for _b, k in creds]))
+
+    def _newapi_account_creds(self):
+        """从配置读取 NEW API 账户查询所需参数。"""
+        base = (self.config.get("newapi_account_base_url", "") or "").strip()
+        if not base:
+            bases = [
+                u.strip()
+                for u in (self.config.get("newapi_base_url", "") or "")
+                .replace(",", "\n")
+                .split("\n")
+                if u.strip()
+            ]
+            base = bases[0] if bases else ""
+        token = (self.config.get("newapi_account_token", "") or "").strip()
+        uid = self.config.get("newapi_user_id", "") or ""
+        return base, token, uid
+
+    async def _balance_newapi_account(self, event: AstrMessageEvent):
+        base, token, uid = self._newapi_account_creds()
+        if not base:
+            yield event.plain_result("未配置 NEW API 站点地址（newapi_account_base_url 或 newapi_base_url）。")
+            return
+        if not token:
+            yield event.plain_result("未配置账户访问令牌（newapi_account_token）。")
+            return
+        yield event.plain_result("🔄 正在查询 NEW API 账户余额，请稍候…")
+        session = await self.balance_manager._get_session()
+        fetcher = NewApiAccountFetcher()
+        try:
+            result = await fetcher.fetch(session, base, token, uid)
+        except Exception as e:
+            result = BalanceResult("NEW API 账户", error=f"请求异常: {e}")
+        yield event.plain_result(self._render_balance_block([result], "NEW API 账户余额"))
+
+    async def _balance_newapi_subscription(self, event: AstrMessageEvent):
+        if not self.config.get("newapi_admin_mode", False):
+            yield event.plain_result(
+                "实验性高级模式未开启：请在插件配置中打开「newapi_admin_mode」。"
+                "（此功能仅供站点的管理员试用，普通用户请勿使用，效果未知）"
+            )
+            return
+        base, token, uid = self._newapi_account_creds()
+        if not base:
+            yield event.plain_result("未配置 NEW API 站点地址（newapi_account_base_url 或 newapi_base_url）。")
+            return
+        if not token:
+            yield event.plain_result("未配置账户访问令牌（newapi_account_token）。")
+            return
+        yield event.plain_result("🔄 正在查询 NEW API 订阅额度（实验性功能，效果未知）…")
+        session = await self.balance_manager._get_session()
+        fetcher = NewApiSubscriptionFetcher()
+        try:
+            result = await fetcher.fetch(session, base, token, uid)
+        except Exception as e:
+            result = BalanceResult("NEW API 订阅", error=f"请求异常: {e}")
+        yield event.plain_result(self._render_balance_block([result], "NEW API 订阅额度"))
+
+    # ================== Token 用量查询 ==================
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("用量", alias={"token用量", "token使用量", "用量统计"})
+    async def token_usage(self, event: AstrMessageEvent):
+        '''查询大模型 Token 用量：用量 [当前|所有|平台名]。'''
+        sub = self._parse_balance_sub(event.message_str or "")
+        if sub in ("", "帮助", "help"):
+            yield event.plain_result(self._token_usage_help())
+            return
+        if sub == "当前":
+            async for msg in self._token_usage_current(event):
+                yield msg
+            return
+        if sub == "所有":
+            async for msg in self._token_usage_all(event):
+                yield msg
+            return
+        async for msg in self._token_usage_platform(event, sub):
+            yield msg
+
+    def _token_usage_help(self) -> str:
+        return (
+            "📊 Token 用量查询\n"
+            "━━━━━━━━━━━━━━\n"
+            " 用量 当前 - 查当前会话的 Token 用量\n"
+            " 用量 所有 - 查所有平台的 Token 用量汇总\n"
+            " 用量 <平台名> - 查指定平台的 Token 用量\n"
+            "说明：统计缓存命中、输入(非缓存)、输出 token"
+        )
+
+    @staticmethod
+    def _format_token_row(label: str, cached: int, other: int, output: int) -> str:
+        total = cached + other + output
+        return f"{label:<20s} {cached:>10,} {other:>12,} {output:>8,} {total:>10,}"
+
+    @staticmethod
+    def _format_token_header() -> str:
+        return (
+            f"{'提供商/模型':<20s} {'缓存命中':>10s} {'输入(非缓存)':>12s} {'输出':>8s} {'总计':>10s}\n"
+            f"{'─'*60}"
+        )
+
+    async def _query_token_usage(self, where_clause=None) -> list:
+        '''查询 ProviderStat 表，按 provider_id 分组汇总 token 用量。'''
+        db = self.context.get_db()
+        async with db.get_db() as session:
+            query = select(
+                ProviderStat.provider_id,
+                func.coalesce(func.sum(ProviderStat.token_input_cached), 0).label("cached"),
+                func.coalesce(func.sum(ProviderStat.token_input_other), 0).label("other"),
+                func.coalesce(func.sum(ProviderStat.token_output), 0).label("output"),
+            ).where(
+                col(ProviderStat.agent_type) == "internal",
+            )
+            if where_clause is not None:
+                query = query.where(where_clause)
+            query = query.group_by(ProviderStat.provider_id).order_by(
+                col(ProviderStat.provider_id).asc()
+            )
+            result = await session.execute(query)
+            rows = result.all()
+        return [(r.provider_id, int(r.cached), int(r.other), int(r.output)) for r in rows]
+
+    async def _token_usage_current(self, event: AstrMessageEvent):
+        cid = await self.context.conversation_manager.get_curr_conversation_id(
+            event.unified_msg_origin
+        )
+        if not cid:
+            yield event.plain_result("当前会话没有 Token 用量记录。")
+            return
+        db = self.context.get_db()
+        async with db.get_db() as session:
+            result = await session.execute(
+                select(
+                    func.coalesce(func.sum(ProviderStat.token_input_cached), 0).label("cached"),
+                    func.coalesce(func.sum(ProviderStat.token_input_other), 0).label("other"),
+                    func.coalesce(func.sum(ProviderStat.token_output), 0).label("output"),
+                ).where(
+                    col(ProviderStat.agent_type) == "internal",
+                    col(ProviderStat.conversation_id) == cid,
+                )
+            )
+            r = result.one()
+        cached, other, output = int(r.cached), int(r.other), int(r.output)
+        total = cached + other + output
+        if total == 0:
+            yield event.plain_result("当前会话没有 Token 用量记录。")
+            return
         lines = [
-            "重启插件增强版 指令列表+用法格式",
-            "",
-            "1️⃣ 重启",
-            "   用法：重启",
-            "   说明：立即重启 AstrBot 核心（需管理员）",
-            "",
-            "2️⃣ 定时重启",
-            "   用法：定时重启 开 / 关 / <秒数>",
-            "   示例：定时重启 7200  （每2小时重启一次）",
-            "   示例：定时重启 关",
-            "",
-            "3️⃣ 定时重置",
-            "   用法：定时重置 <HH:MM> / 关",
-            "   示例：定时重置 04:00  （每日凌晨4点重置上下文）",
-            "   示例：定时重置 关",
-            "",
-            "4️⃣ 清空所有会话上下文",
-            "   用法：清空所有会话上下文",
-            "   说明：一键清空所有已登记会话的上下文",
-            "",
-            "5️⃣ 查看列表",
-            "   用法：查看列表",
-            "   说明：查看当前已登记的所有群聊和私聊会话",
-            "",
-            "6️⃣ 增加会话",
-            "   用法：增加会话 群聊 <群号>",
-            "   用法：增加会话 私聊 <QQ号>",
-            "   示例：增加会话 群聊 123456789",
-            "   说明：为定时重置名单添加会话",
-            "",
-            "7️⃣ 删除会话",
-            "   用法：删除会话 群聊 <群号>",
-            "   用法：删除会话 私聊 <QQ号>",
-            "   示例：删除会话 私聊 987654321",
-            "   说明：从定时重置名单移除会话",
-            "",
-            "8️⃣ 内存阈值",
-            "   用法：内存阈值 <数值[单位]> / 开 / 关 / 状态",
-            "   示例：内存阈值 85        （按默认单位，默认%）",
-            "   示例：内存阈值 2048 mb   （带单位，自动切换为MB）",
-            "   示例：内存阈值 状态      （查看当前设置）",
-            "   说明：只输数字按默认单位，带单位后缀优先",
-            "",
-            "9️⃣ 内存单位",
-            "   用法：内存单位 <percent|mb> / 状态",
-            "   示例：内存单位 mb     （默认单位切为MB）",
-            "   示例：内存单位 状态  （查看当前默认单位）",
-            "   说明：只输数字时按该默认单位解释",
-            "",
-            "🔟 内存监控",
-            "   用法：内存监控 <数值[单位]> / 开 / 关 / 状态",
-            "   示例：内存监控 80          （设阈值并自动开启监控）",
-            "   示例：内存监控 2048 mb     （MB单位同款用法）",
-            "   说明：设阈值+开监控一条指令搞定",
-            "",
-            "1️⃣1️⃣ 内存检查间隔",
-            "   用法：内存检查间隔 <秒数> / 默认",
-            "   示例：内存检查间隔 60  （每60秒检查一次）",
-            "   示例：内存检查间隔 默认  （恢复30秒）",
-            "",
-            "1️⃣2️⃣ 内存冷却",
-            "   用法：内存冷却 <秒数> / 默认",
-            "   示例：内存冷却 300  （触发重启后冷却5分钟）",
-            "   示例：内存冷却 默认  （恢复600秒）",
-            "",
-            "1️⃣3️⃣ 重置自动重启",
-            "   用法：重置自动重启",
-            "   说明：重置自动重启倒计时并重载内存监控配置",
-            "",
-            "1️⃣4️⃣ 重载",
-            "   用法：重载 <插件名/序号>",
-            "   示例：重载 1       （重载序号1的插件）",
-            "   示例：重载 all     （重载所有插件）",
-            "   说明：空参时列出所有插件及序号",
-            "",
-            "1️⃣5️⃣ 插件状态",
-            "   用法：插件状态",
-            "   说明：查看重启插件当前配置状态",
-            "",
-            "1️⃣6️⃣ 性能",
-            "   用法：性能",
-            "   说明：查看系统 CPU 和内存占用",
-            "",
+            "📊 当前会话 Token 用量",
+            self._format_token_header(),
+            self._format_token_row("本会话", cached, other, output),
+            f"{'─'*60}",
+            self._format_token_row("总计", cached, other, output),
         ]
+        yield event.plain_result("\n".join(lines))
+
+    async def _token_usage_all(self, event: AstrMessageEvent):
+        rows = await self._query_token_usage()
+        if not rows:
+            yield event.plain_result("没有 Token 用量记录。")
+            return
+        lines = ["📊 全部平台 Token 用量", self._format_token_header()]
+        total_cached = total_other = total_output = 0
+        for pid, cached, other, output in rows:
+            lines.append(self._format_token_row(pid, cached, other, output))
+            total_cached += cached
+            total_other += other
+            total_output += output
+        lines.append(f"{'─'*60}")
+        lines.append(self._format_token_row("总计", total_cached, total_other, total_output))
+        yield event.plain_result("\n".join(lines))
+
+    async def _token_usage_platform(self, event: AstrMessageEvent, name: str):
+        rows = await self._query_token_usage(
+            col(ProviderStat.provider_id).like(f"%{name}%")
+        )
+        if not rows:
+            yield event.plain_result(f"未找到匹配「{name}」的 Token 用量记录。")
+            return
+        lines = [f"📊 平台「{name}」Token 用量", self._format_token_header()]
+        total_cached = total_other = total_output = 0
+        for pid, cached, other, output in rows:
+            lines.append(self._format_token_row(pid, cached, other, output))
+            total_cached += cached
+            total_other += other
+            total_output += output
+        lines.append(f"{'─'*60}")
+        lines.append(self._format_token_row("总计", total_cached, total_other, total_output))
+        yield event.plain_result("\n".join(lines))
+
+    # ================== 余额查询 LLM 工具（自然对话调用） ==================
+
+    @filter.llm_tool(name="query_balance")
+    async def llm_query_balance(self, event: AstrMessageEvent) -> MessageEventResult:
+        """查询并返回当前配置的所有平台余额信息（LLM 工具，需开启 enable_balance_llm_tool）。"""
+        if not self.config.get("enable_balance_llm_tool", False):
+            yield event.plain_result("余额查询 LLM 工具未启用（可在插件配置中打开 enable_balance_llm_tool）。")
+            return
+        providers = self.context.get_all_providers()
+        if not providers:
+            yield event.plain_result("当前未配置任何模型提供商。")
+            return
+        creds = []
+        seen_creds = set()
+        for p in providers:
+            cfg = getattr(p, "provider_config", {}) or {}
+            base = cfg.get("api_base", "") or ""
+            for k in self._provider_keys(p):
+                if (base, k) not in seen_creds:
+                    seen_creds.add((base, k))
+                    creds.append((base, k))
+        if not creds:
+            yield event.plain_result("未找到有效的 API Key 配置。")
+            return
+        tasks = [self.balance_manager.query(k, b) for (b, k) in creds]
+        results = await asyncio.gather(*tasks)
+        output_tpl = self._tpl("balance_output_template", "")
+        error_tpl = self._tpl("balance_error_template", "")
+        lines = [r.render_tpl(output_tpl, error_tpl) for r in results]
         yield event.plain_result("\n".join(lines))

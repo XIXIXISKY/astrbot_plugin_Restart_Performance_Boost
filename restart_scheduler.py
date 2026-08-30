@@ -1,7 +1,6 @@
 # restart_scheduler.py
 import asyncio
 import json
-import os
 import time
 from datetime import datetime, timedelta
 
@@ -155,15 +154,44 @@ class RestartScheduler:
 
     # ================== 动作 ==================
 
+    def _resolve_notify_platform(self, notify_umo: str, configured: str) -> str:
+        """方案B：notify_platform 为 auto/空时，自动检测当前实际平台。
+
+        优先从 UMO 前缀解析平台名；否则从当前运行的平台实例里挑一个。
+        """
+        configured = (configured or "").strip()
+        if configured and configured != "auto":
+            return configured
+        if notify_umo:
+            try:
+                head = str(notify_umo).split(":", 1)[0].strip()
+                if head:
+                    return head
+            except Exception:
+                pass
+        try:
+            insts = getattr(getattr(self.context, "platform_manager", None), "platform_insts", None) or []
+            for inst in insts:
+                try:
+                    mid = inst.meta().id
+                    if mid:
+                        return mid
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return configured
+
     async def restart(self, reason: str = "手动重启", trigger_mem: str | None = None):
         """调用 Dashboard 接口执行重启，并更新缓存时间戳和原因以便发通知"""
-        # 优先使用已有的平台信息和会话；没有则默认发给汐汐私聊
+        # 优先使用缓存里的平台信息和会话；否则回落到 notify_umo/notify_platform 配置，未配置则为空（跳过通知）
         if self.cache.get("umo") and self.cache.get("platform_id"):
             notify_umo = self.cache["umo"]
             notify_platform = self.cache["platform_id"]
         else:
             notify_umo = self.config.get("notify_umo", "")
-            notify_platform = self.config.get("notify_platform", "")
+            configured_platform = self.config.get("notify_platform", "")
+            notify_platform = self._resolve_notify_platform(notify_umo, configured_platform)
             if not notify_umo:
                 notify_umo = ""
                 notify_platform = ""

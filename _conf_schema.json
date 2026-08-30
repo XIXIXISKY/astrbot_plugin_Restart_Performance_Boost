@@ -35,11 +35,160 @@
         "type": "int",
         "default": 600
     },
+    "newapi_base_url": {
+        "description": "NEW API 中转站地址（余额查询）",
+        "type": "text",
+        "hint": "用于查询模型 Key 的余额（余额 openai 等），用 API key 鉴权；每行一个，例如 http://127.0.0.1:3000。如果 Key 和账户在同一站点，下方「账户查询站点地址」留空即可自动复用此地址",
+        "default": ""
+    },
+    "newapi_account_base_url": {
+        "description": "NEW API 账户查询站点地址",
+        "type": "string",
+        "hint": "用于查询账户本身的余额（余额 账户），用 access token 鉴权。留空则自动复用上方「中转站地址」的第一个。如果 Key 和账户不在同一个站点，请单独填写此地址",
+        "default": ""
+    },
+    "newapi_account_token": {
+        "description": "NEW API 账户访问令牌（Access Token，非模型 key）",
+        "type": "string",
+        "hint": "登录站点后台 → 个人设置 → 令牌 生成的 access token（一般 eyJ... 开头），用于 /api/user/self 查询账户余额",
+        "default": ""
+    },
+    "newapi_user_id": {
+        "description": "NEW API 用户 ID（可选）",
+        "type": "string",
+        "hint": "个人设置里显示的用户 ID；留空则只靠令牌查询",
+        "default": ""
+    },
+    "newapi_admin_mode": {
+        "description": "实验性高级模式：启用订阅额度查询",
+        "type": "bool",
+        "hint": "接口为 /api/user/subscription。此功能是实验性功能，仅供站点的管理员试用，普通用户请勿使用，效果未知。开启后可用「余额 订阅」查询订阅额度，部分站点需要管理员权限，可能返回 403",
+        "default": false
+    },
+    "balance_output_template": {
+        "description": "余额单项模板（可选）",
+        "type": "text",
+        "default": "",
+        "hint": "留空用默认格式。可用变量：{{source_name}}(平台) {{currency}}(币种) {{balance}}(智能余额) {{total_balance}}(总额) {{remaining_balance}}(剩余) {{used_balance}}(已用) {{raw_info}}(备注) {{api_key}}(脱敏Key) {{smart_balance}}(附加信息块)。条件行 {{?变量}} 值为空/0 时自动删除整行；\\n 表示换行。示例： **{{source_name}}**\\n    {{balance}} {{currency}}\\n{{?used_balance}} 已用: {{used_balance}} {{currency}}"
+    },
+    "balance_error_template": {
+        "description": " 余额失败模板（可选）",
+        "type": "text",
+        "default": "",
+        "hint": "留空用默认。可用变量：{{source_name}} {{error}} {{api_key}}。示例： **{{source_name}}**\\n   {{error}}"
+    },
+    "balance_header_template": {
+        "description": " 余额标题模板（可选）",
+        "type": "text",
+        "default": " **{{title}}**",
+        "hint": "消息头部格式，可用 {{title}} 占位标题。留空用默认。"
+    },
+    "balance_separator_template": {
+        "description": " 余额分隔符模板（可选）",
+        "type": "text",
+        "default": "\\n\\n",
+        "hint": "标题与内容、多项结果之间的分隔符。支持 \\n 换行。留空用默认。"
+    },
+    "enable_balance_llm_tool": {
+        "description": " 启用余额查询 LLM 工具",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，AI 在自然对话中可直接调用 query_balance 工具查询所有平台余额"
+    },
+    "balance_admin_only": {
+        "description": " 余额/用量指令仅管理员可用",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后任何用户都能使用余额查询指令（默认开启，保持原行为）"
+    },
+    "balance_show_unsupported": {
+        "description": " 「余额 所有」显示未适配平台",
+        "type": "bool",
+        "default": true,
+        "hint": "在「余额 所有」末尾列出未适配的平台名称"
+    },
+    "balance_alias_config": {
+        "description": " 平台别名扩展（YAML/JSON）",
+        "type": "text",
+        "editor_mode": true,
+        "editor_language": "yaml",
+        "default": "",
+        "hint": "给平台追加更多别名，格式：deepseek: [\"DS\", \"深度\", \"我的ds\"]。支持 YAML 或 JSON 文本"
+    },
+    "balance_yaml_enabled": {
+        "description": " 启用 YAML 自定义服务查询",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后用「余额 yaml」按 balance_yaml_config 查询任意 API 服务余额"
+    },
+    "balance_yaml_config": {
+        "description": " YAML 服务配置内容",
+        "type": "text",
+        "editor_mode": true,
+        "editor_language": "yaml",
+        "editor_theme": "vs-dark",
+        "default": "services:\n  example:\n    display_name: 示例服务\n    url: \"https://api.example.com/balance\"\n    method: \"GET\"\n    headers:\n      Authorization: \"Bearer token\"\n    result_template: \"余额：{{data.balance}} 元\"",
+        "hint": "services 下每个服务：url/method/headers/result_template/display_name。模板支持 {{data.xxx}} 路径引用、{{ {data.a} - {data.b} }} 表达式计算、{data.xxx} 单层兼容"
+    },
     "ctx_reset_time": {
         "description": "每日定时重置上下文（24小时制 HH:MM，留空关闭）",
         "type": "string",
         "hint": "填入时间如 23:00，每天到该时间自动触发reset清空上下文。留空表示关闭。可用命令 \"定时重置 <HH:MM|关>\" 设置",
         "default": ""
+    },
+    "notify_umo": {
+        "description": "重启反馈/重置通知的默认通知目标会话",
+        "type": "string",
+        "hint": "填写统一消息来源 UMO；留空则不发送重启反馈和重置通知",
+        "default": ""
+    },
+    "notify_platform": {
+        "description": "重启反馈/重置通知的默认通知目标平台",
+        "type": "string",
+        "hint": "选 auto 或不填则自动检测当前运行的平台；也可以从下拉里直接选择你的消息平台",
+        "options": [
+            "auto",
+            "aiocqhttp",
+            "qqofficial",
+            "qqofficial_webhook",
+            "wecom",
+            "wecom_ai_bot",
+            "weixin_oc",
+            "weixin_official_account",
+            "dingtalk",
+            "webchat",
+            "telegram",
+            "discord",
+            "satori",
+            "kook",
+            "slack",
+            "lark",
+            "line",
+            "mattermost",
+            "misskey"
+        ],
+        "labels": [
+            "自动检测（推荐）",
+            "aiocqhttp（OneBot/QQ）",
+            "QQ 官方接口",
+            "QQ 官方 Webhook",
+            "企业微信",
+            "企业微信 AI 机器人",
+            "微信（Weixin OC）",
+            "微信公众号",
+            "钉钉",
+            "WebChat 网页",
+            "Telegram",
+            "Discord",
+            "Satori",
+            "KOOK",
+            "Slack",
+            "飞书 Lark",
+            "LINE",
+            "Mattermost",
+            "Misskey"
+        ],
+        "default": "auto"
     },
     "restart_cache": {
         "description": "重启缓存区",
