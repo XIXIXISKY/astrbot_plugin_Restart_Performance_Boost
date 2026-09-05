@@ -1,0 +1,8 @@
+name: astrbot_plugin_restart_performance_boost
+display_name: 重启性能增强
+desc: 一个手动和自动重启AstrBot的插件，支持指令手动重启、定时自动重启、内存占用监控自动重启，并可每日定时来重置会话上下文，解决Bot长时间运行带来的上下文过长导致LLM回复过慢和内存泄露问题
+help: 略
+version: v1.0.3
+author: 汐汐（QQ：1985895920）
+repo: https://github.com/XIXIXISKY/astrbot_plugin_Restart_Performance_Boost
+astrbot_version: ">=4.27.2"
